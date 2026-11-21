@@ -289,36 +289,54 @@ def start_session(resp, user_id: int):
 # ---------------------------------------------------------------- style
 CSS = """
 :root{
-  --bg:#fff6fa; --ink:#4b3a5e; --muted:#9a8bab;
-  --pink:#ff8fb3; --pink-soft:#ffe0ec;
-  --mint:#6fdcb8; --mint-soft:#d9f7ec;
+  --bg:#fff6fa; --dot:#ffd3e4; --ink:#4b3a5e; --muted:#9a8bab;
+  --surface:#ffffff; --field:#fcfaff; --accent-ink:#ffffff;
+  --pink:#ff8fb3; --pink-soft:#ffe0ec; --pink-text:#d6457a; --pink-shadow:#e0709a;
+  --mint:#6fdcb8; --mint-soft:#d9f7ec; --mint-text:#1f9a76;
   --butter:#ffd873; --butter-soft:#fff1c9;
   --lav:#b9a7ff; --lav-soft:#ece6ff;
+}
+html[data-theme="dark"]{
+  --bg:#151221; --dot:#2a2240; --ink:#f4eefc; --muted:#a699be;
+  --surface:#201b33; --field:#181427; --accent-ink:#161224;
+  --pink:#ff7aa6; --pink-soft:#3d1d2e; --pink-text:#ff9ec0; --pink-shadow:#b84972;
+  --mint:#4fd1a5; --mint-soft:#17382e; --mint-text:#7be6c2;
+  --butter:#f2c14e; --butter-soft:#382e18;
+  --lav:#9e88f5; --lav-soft:#2c2547;
 }
 *{box-sizing:border-box}
 body{
   margin:0;padding:20px 16px 48px;color:var(--ink);
   font-family:'Mali','Noto Sans Thai',system-ui,sans-serif;
   background-color:var(--bg);
-  background-image:radial-gradient(#ffd3e4 2px,transparent 2px);
+  background-image:radial-gradient(var(--dot) 2px,transparent 2px);
   background-size:26px 26px;
+  transition:background-color .25s,color .25s;
 }
 .wrap{max-width:720px;margin:0 auto}
-header{text-align:center;margin-bottom:14px}
+header{text-align:center;margin-bottom:14px;position:relative}
+.topbar{display:flex;justify-content:flex-end;margin-bottom:4px}
+.theme-btn{
+  font:inherit;font-size:13px;font-weight:700;color:var(--ink);
+  background:var(--surface);border:2px solid var(--lav);border-radius:999px;
+  padding:6px 12px;cursor:pointer;box-shadow:0 3px 0 var(--lav-soft);
+  display:inline-flex;align-items:center;gap:6px;
+}
+.theme-btn:hover{background:var(--lav-soft)}
 header .pig{font-size:56px;display:inline-block;transition:transform .3s}
 header .pig:hover{transform:rotate(-12deg) scale(1.1)}
 h1{margin:4px 0 2px;font-size:28px;font-weight:700}
 header p{margin:0;color:var(--muted);font-size:15px}
 .hello{display:flex;justify-content:center;align-items:center;gap:10px;font-size:14px;color:var(--muted);margin-top:6px}
 .hello form{display:inline}
-.hello button{font:inherit;border:0;background:none;color:#d6457a;cursor:pointer;text-decoration:underline}
+.hello button{font:inherit;border:0;background:none;color:var(--pink-text);cursor:pointer;text-decoration:underline}
 
 .chips{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin:10px 0 2px}
 .chip{
-  padding:7px 16px;border-radius:999px;border:3px solid var(--lav);background:#fff;
+  padding:7px 16px;border-radius:999px;border:3px solid var(--lav);background:var(--surface);
   color:var(--ink);text-decoration:none;font-size:14px;font-weight:600;
 }
-.chip.sel{background:var(--lav);color:#fff}
+.chip.sel{background:var(--lav);color:var(--accent-ink)}
 .notice{
   background:var(--butter-soft);border:3px solid var(--butter);border-radius:18px;
   padding:10px 14px;margin:12px 0;text-align:center;
@@ -328,12 +346,12 @@ header p{margin:0;color:var(--muted);font-size:15px}
 .monthnav{display:flex;justify-content:center;align-items:center;gap:10px;margin:14px 0}
 .monthnav a{
   width:40px;height:40px;border-radius:50%;display:grid;place-items:center;
-  background:#fff;border:3px solid var(--lav);color:var(--ink);text-decoration:none;
+  background:var(--surface);border:3px solid var(--lav);color:var(--ink);text-decoration:none;
   font-size:16px;box-shadow:0 4px 0 var(--lav-soft);
 }
 .monthnav a:hover{background:var(--lav-soft)}
 .monthnav input{
-  font:inherit;color:var(--ink);background:#fff;border:3px solid var(--lav);
+  font:inherit;color:var(--ink);background:var(--surface);border:3px solid var(--lav);
   border-radius:999px;padding:8px 18px;box-shadow:0 4px 0 var(--lav-soft);
 }
 
@@ -349,7 +367,7 @@ header p{margin:0;color:var(--muted);font-size:15px}
 .card.bal{background:var(--butter-soft);border-color:var(--butter);box-shadow:0 5px 0 var(--butter)}
 
 form.add{
-  background:#fff;border:3px solid var(--lav);border-radius:28px;padding:18px;
+  background:var(--surface);border:3px solid var(--lav);border-radius:28px;padding:18px;
   box-shadow:0 6px 0 var(--lav);display:grid;grid-template-columns:1fr 1fr;gap:10px;
 }
 form.add h2{grid-column:1/3;margin:0;font-size:18px}
@@ -358,30 +376,30 @@ form.add .full{grid-column:1/3}
 .kind input{position:absolute;opacity:0}
 .kind label{
   text-align:center;padding:12px;border-radius:999px;border:3px solid;cursor:pointer;
-  font-weight:700;background:#fff;
+  font-weight:700;background:var(--surface);
 }
-.kind .k-out{border-color:var(--pink);color:#d6457a}
-.kind .k-in{border-color:var(--mint);color:#1f9a76}
-.kind input:checked + .k-out{background:var(--pink);color:#fff}
-.kind input:checked + .k-in{background:var(--mint);color:#fff}
+.kind .k-out{border-color:var(--pink);color:var(--pink-text)}
+.kind .k-in{border-color:var(--mint);color:var(--mint-text)}
+.kind input:checked + .k-out{background:var(--pink);color:var(--accent-ink)}
+.kind input:checked + .k-in{background:var(--mint);color:var(--accent-ink)}
 .kind input:focus-visible + label{outline:3px solid var(--ink);outline-offset:2px}
 form.add input[type=date],form.add input[type=number],form.add input[type=text],
 form.add input[type=password],form.add select,.two input{
   font:inherit;color:var(--ink);padding:11px 14px;border:3px solid var(--lav-soft);
-  border-radius:16px;background:#fcfaff;width:100%;
+  border-radius:16px;background:var(--field);width:100%;
 }
 form.add input:focus,form.add select:focus,.two input:focus{outline:none;border-color:var(--lav)}
 form.add button{
-  font:inherit;font-weight:700;font-size:17px;color:#fff;background:var(--pink);
-  border:0;border-radius:999px;padding:13px;cursor:pointer;box-shadow:0 5px 0 #e0709a;
+  font:inherit;font-weight:700;font-size:17px;color:var(--accent-ink);background:var(--pink);
+  border:0;border-radius:999px;padding:13px;cursor:pointer;box-shadow:0 5px 0 var(--pink-shadow);
 }
-form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 #e0709a}
+form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 var(--pink-shadow)}
 .switch{text-align:center;margin-top:14px;font-size:14px}
-.switch a{color:#d6457a}
+.switch a{color:var(--pink-text)}
 .auth{max-width:400px;margin:24px auto}
 
 .panel{
-  background:#fff;border:3px solid var(--butter);border-radius:28px;padding:16px 18px 18px;
+  background:var(--surface);border:3px solid var(--butter);border-radius:28px;padding:16px 18px 18px;
   box-shadow:0 6px 0 var(--butter);margin-top:22px;
 }
 .panel h2{margin:0 0 12px;font-size:18px}
@@ -390,13 +408,13 @@ form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 #e0709a}
 .two{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
 .two form{display:grid;gap:8px;align-content:start}
 .two button{
-  font:inherit;font-weight:700;color:#fff;background:var(--lav);border:0;
+  font:inherit;font-weight:700;color:var(--accent-ink);background:var(--lav);border:0;
   border-radius:999px;padding:10px;cursor:pointer;
 }
 .donutbox{display:flex;flex-wrap:wrap;gap:18px;align-items:center;justify-content:center}
 .donut{width:170px;height:170px;border-radius:50%;position:relative;flex:none}
 .hole{
-  position:absolute;inset:34px;background:#fff;border-radius:50%;
+  position:absolute;inset:34px;background:var(--surface);border-radius:50%;
   display:grid;place-content:center;text-align:center;font-size:12px;color:var(--muted);
 }
 .hole b{display:block;font-size:16px;color:var(--ink)}
@@ -422,7 +440,7 @@ form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 #e0709a}
 
 h2.list-title{margin:26px 4px 10px;font-size:18px}
 .item{
-  display:flex;align-items:center;gap:12px;background:#fff;border-radius:22px;
+  display:flex;align-items:center;gap:12px;background:var(--surface);border-radius:22px;
   padding:10px 14px;margin-bottom:10px;border:3px solid var(--lav-soft);
 }
 .bubble{
@@ -435,15 +453,15 @@ h2.list-title{margin:26px 4px 10px;font-size:18px}
 .info b{display:block;font-size:16px}
 .info span{color:var(--muted);font-size:13px;overflow-wrap:anywhere}
 .amt{font-weight:700;font-size:17px;white-space:nowrap}
-.item.out .amt{color:#d6457a}
-.item.in .amt{color:#1f9a76}
+.item.out .amt{color:var(--pink-text)}
+.item.in .amt{color:var(--mint-text)}
 .del{
   border:0;background:var(--lav-soft);color:var(--muted);width:32px;height:32px;
   border-radius:50%;cursor:pointer;font-size:14px;
 }
-.del:hover{background:var(--pink-soft);color:#d6457a}
+.del:hover{background:var(--pink-soft);color:var(--pink-text)}
 .empty{
-  text-align:center;background:#fff;border:3px dashed var(--lav);border-radius:24px;
+  text-align:center;background:var(--surface);border:3px dashed var(--lav);border-radius:24px;
   padding:26px 16px;color:var(--muted);
 }
 .empty .em{font-size:38px;display:block}
@@ -458,6 +476,48 @@ h2.list-title{margin:26px 4px 10px;font-size:18px}
 @media (prefers-reduced-motion:reduce){*{transition:none!important}}
 """
 
+THEME_INIT_SCRIPT = """<script>
+(function(){
+  try{
+    var saved = localStorage.getItem('theme');
+    if(!saved && window.matchMedia && window.matchMedia('(prefers-color-scheme: dark)').matches){
+      saved = 'dark';
+    }
+    if(saved === 'dark'){
+      document.documentElement.setAttribute('data-theme', 'dark');
+    }
+  }catch(e){}
+})();
+</script>"""
+
+THEME_TOGGLE_HTML = """<div class="topbar">
+  <button type="button" class="theme-btn" id="themeToggle" onclick="toggleTheme()" aria-label="สลับโหมดสว่างและโหมดมืด">
+    <span id="themeIcon">🌙</span><span id="themeLabel">โหมดมืด</span>
+  </button>
+</div>"""
+
+THEME_TOGGLE_SCRIPT = """<script>
+function syncThemeUI(){
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  var icon = document.getElementById('themeIcon');
+  var label = document.getElementById('themeLabel');
+  if(icon) icon.textContent = isDark ? '☀️' : '🌙';
+  if(label) label.textContent = isDark ? 'โหมดสว่าง' : 'โหมดมืด';
+}
+function toggleTheme(){
+  var isDark = document.documentElement.getAttribute('data-theme') === 'dark';
+  if(isDark){
+    document.documentElement.removeAttribute('data-theme');
+    try{ localStorage.setItem('theme', 'light'); }catch(e){}
+  }else{
+    document.documentElement.setAttribute('data-theme', 'dark');
+    try{ localStorage.setItem('theme', 'dark'); }catch(e){}
+  }
+  syncThemeUI();
+}
+syncThemeUI();
+</script>"""
+
 HEAD = """<!doctype html>
 <html lang="th"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -465,7 +525,8 @@ HEAD = """<!doctype html>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;600;700&display=swap" rel="stylesheet">
-<style>%s</style></head><body><div class="wrap">""" % CSS
+%s
+<style>%s</style></head><body><div class="wrap">""" % (THEME_INIT_SCRIPT, CSS)
 
 
 # ---------------------------------------------------------------- auth pages
@@ -489,7 +550,10 @@ def auth_page(mode: str, error: str = "", username: str = "") -> HTMLResponse:
         HEAD
         + f"""
 <div class="auth">
-<header><span class="pig">🐱✨</span><h1>สมุดเก็บตังค์</h1><p>จดทุกบาท เก็บทุกยิ้ม</p></header>
+<header>
+  {THEME_TOGGLE_HTML}
+  <span class="pig">🐱✨</span><h1>สมุดเก็บตังค์</h1><p>จดทุกบาท เก็บทุกยิ้ม</p>
+</header>
 {err}
 <form class="add" method="post" action="/{mode}">
   <h2>{'✨ สมัครสมาชิก' if is_reg else '🔑 เข้าสู่ระบบ'}</h2>
@@ -501,7 +565,7 @@ def auth_page(mode: str, error: str = "", username: str = "") -> HTMLResponse:
   <button class="full">{button}</button>
 </form>
 <p class="switch">{other}</p>
-</div></div></body></html>"""
+</div>{THEME_TOGGLE_SCRIPT}</div></body></html>"""
     )
 
 
@@ -718,6 +782,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
         HEAD
         + f"""
 <header>
+  {THEME_TOGGLE_HTML}
   <span class="pig">🐱✨</span>
   <h1>สมุดเก็บตังค์</h1>
   <p>จดทุกบาท เก็บทุกยิ้ม</p>
@@ -788,7 +853,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
   </div>
 </div>
 
-</div></body></html>"""
+{THEME_TOGGLE_SCRIPT}</div></body></html>"""
     )
 
 
