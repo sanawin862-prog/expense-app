@@ -16,10 +16,21 @@ USE_PG = bool(DATABASE_URL)
 if USE_PG:
     import psycopg2
     from psycopg2.extras import RealDictCursor
+    from psycopg2.pool import SimpleConnectionPool
 
 app = FastAPI()
 DB = "expense.db"
 SESSION_DAYS = 30
+PG_POOL = None
+
+
+def get_pg_pool():
+    global PG_POOL
+    if USE_PG and PG_POOL is None:
+        PG_POOL = SimpleConnectionPool(
+            1, 5, DATABASE_URL, cursor_factory=RealDictCursor
+        )
+    return PG_POOL
 
 
 class DBConn:
@@ -55,16 +66,22 @@ class DBConn:
         return self
 
     def __exit__(self, exc_type, exc, tb):
-        if exc_type is None:
-            self._conn.commit()
-        else:
-            self._conn.rollback()
-        self._conn.close()
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            if self._is_pg and PG_POOL is not None:
+                PG_POOL.putconn(self._conn)
+            else:
+                self._conn.close()
 
 
 def db():
     if USE_PG:
-        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        pool = get_pg_pool()
+        conn = pool.getconn()
         return DBConn(conn, True)
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
@@ -559,8 +576,8 @@ def logout(request: Request):
 # ---------------------------------------------------------------- main page
 @app.get("/", response_class=HTMLResponse)
 def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
-    user = current_user(request)
-    if not user:
+    token = request.cookies.get("sid")
+    if not token:
         return RedirectResponse("/login", status_code=303)
 
     today = date.today()
@@ -571,6 +588,13 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
     month_expr = "LEFT(day, 7)" if USE_PG else "substr(day, 1, 7)"
 
     with db() as con:
+        user = con.execute(
+            "SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?",
+            (token,),
+        ).fetchone()
+        if not user:
+            return RedirectResponse("/login", status_code=303)
+
         books = con.execute(
             "SELECT b.* FROM books b JOIN members m ON m.book_id=b.id "
             "WHERE m.user_id=? ORDER BY b.id",
