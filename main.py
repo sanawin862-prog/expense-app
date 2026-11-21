@@ -1,5 +1,6 @@
 import hashlib
 import hmac
+import os
 import re
 import secrets
 import sqlite3
@@ -9,57 +10,155 @@ from html import escape
 from fastapi import FastAPI, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
+USE_PG = bool(DATABASE_URL)
+
+if USE_PG:
+    import psycopg2
+    from psycopg2.extras import RealDictCursor
+
 app = FastAPI()
 DB = "expense.db"
 SESSION_DAYS = 30
 
 
+class DBConn:
+    def __init__(self, raw_conn, is_pg: bool):
+        self._conn = raw_conn
+        self._is_pg = is_pg
+
+    def _sql(self, query: str) -> str:
+        if not self._is_pg:
+            return query
+        q = query.replace("?", "%s")
+        q = q.replace("INSERT OR IGNORE INTO", "INSERT INTO")
+        if "INSERT INTO members" in q and "ON CONFLICT" not in q:
+            q = q.rstrip().rstrip(";") + " ON CONFLICT DO NOTHING"
+        return q
+
+    def execute(self, query: str, params=()):
+        cur = self._conn.cursor()
+        cur.execute(self._sql(query), params)
+        return cur
+
+    def executescript(self, script: str):
+        if not self._is_pg:
+            self._conn.executescript(script)
+            return
+        cur = self._conn.cursor()
+        for stmt in script.split(";"):
+            s = stmt.strip()
+            if s:
+                cur.execute(s)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        if exc_type is None:
+            self._conn.commit()
+        else:
+            self._conn.rollback()
+        self._conn.close()
+
+
 def db():
+    if USE_PG:
+        conn = psycopg2.connect(DATABASE_URL, cursor_factory=RealDictCursor)
+        return DBConn(conn, True)
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
-    return con
+    return DBConn(con, False)
 
 
-with db() as con:
-    con.executescript(
-        """
-        CREATE TABLE IF NOT EXISTS entries(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            day TEXT NOT NULL,
-            kind TEXT NOT NULL,
-            category TEXT NOT NULL,
-            amount REAL NOT NULL,
-            note TEXT DEFAULT ''
-        );
-        CREATE TABLE IF NOT EXISTS users(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE NOT NULL,
-            display TEXT NOT NULL,
-            salt TEXT NOT NULL,
-            pw TEXT NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS sessions(
-            token TEXT PRIMARY KEY,
-            user_id INTEGER NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS books(
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            code TEXT UNIQUE NOT NULL
-        );
-        CREATE TABLE IF NOT EXISTS members(
-            book_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            PRIMARY KEY(book_id, user_id)
-        );
-        """
-    )
-    cols = [r[1] for r in con.execute("PRAGMA table_info(entries)")]
-    if "book_id" not in cols:
-        con.execute("ALTER TABLE entries ADD COLUMN book_id INTEGER")
-    if "user_id" not in cols:
-        con.execute("ALTER TABLE entries ADD COLUMN user_id INTEGER")
-    con.execute("UPDATE entries SET category='ค่าน้ำมัน' WHERE category='เดินทาง'")
+def init_db():
+    with db() as con:
+        if USE_PG:
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS entries(
+                    id SERIAL PRIMARY KEY,
+                    day TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount DOUBLE PRECISION NOT NULL,
+                    note TEXT DEFAULT '',
+                    book_id INTEGER,
+                    user_id INTEGER
+                );
+                CREATE TABLE IF NOT EXISTS users(
+                    id SERIAL PRIMARY KEY,
+                    username TEXT UNIQUE NOT NULL,
+                    display TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    pw TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions(
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS books(
+                    id SERIAL PRIMARY KEY,
+                    name TEXT NOT NULL,
+                    code TEXT UNIQUE NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS members(
+                    book_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    PRIMARY KEY(book_id, user_id)
+                );
+                """
+            )
+            con.execute(
+                "ALTER TABLE entries ADD COLUMN IF NOT EXISTS book_id INTEGER"
+            )
+            con.execute(
+                "ALTER TABLE entries ADD COLUMN IF NOT EXISTS user_id INTEGER"
+            )
+        else:
+            con.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS entries(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    day TEXT NOT NULL,
+                    kind TEXT NOT NULL,
+                    category TEXT NOT NULL,
+                    amount REAL NOT NULL,
+                    note TEXT DEFAULT ''
+                );
+                CREATE TABLE IF NOT EXISTS users(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    username TEXT UNIQUE NOT NULL,
+                    display TEXT NOT NULL,
+                    salt TEXT NOT NULL,
+                    pw TEXT NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS sessions(
+                    token TEXT PRIMARY KEY,
+                    user_id INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS books(
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    name TEXT NOT NULL,
+                    code TEXT UNIQUE NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS members(
+                    book_id INTEGER NOT NULL,
+                    user_id INTEGER NOT NULL,
+                    PRIMARY KEY(book_id, user_id)
+                );
+                """
+            )
+            cols = [r[1] for r in con.execute("PRAGMA table_info(entries)").fetchall()]
+            if "book_id" not in cols:
+                con.execute("ALTER TABLE entries ADD COLUMN book_id INTEGER")
+            if "user_id" not in cols:
+                con.execute("ALTER TABLE entries ADD COLUMN user_id INTEGER")
+
+        con.execute("UPDATE entries SET category='ค่าน้ำมัน' WHERE category='เดินทาง'")
+
+
+init_db()
 
 # หมวดหมู่ + อีโมจิ (เพิ่มหมวดใหม่ได้ที่นี่)
 CATEGORIES = {
@@ -120,11 +219,19 @@ def new_code(con) -> str:
 
 
 def create_book(con, name: str, user_id: int) -> int:
-    cur = con.execute(
-        "INSERT INTO books(name, code) VALUES (?,?)", (name, new_code(con))
-    )
-    con.execute("INSERT INTO members(book_id, user_id) VALUES (?,?)", (cur.lastrowid, user_id))
-    return cur.lastrowid
+    code = new_code(con)
+    if USE_PG:
+        row = con.execute(
+            "INSERT INTO books(name, code) VALUES (?,?) RETURNING id", (name, code)
+        ).fetchone()
+        book_id = row["id"]
+    else:
+        cur = con.execute(
+            "INSERT INTO books(name, code) VALUES (?,?)", (name, code)
+        )
+        book_id = cur.lastrowid
+    con.execute("INSERT INTO members(book_id, user_id) VALUES (?,?)", (book_id, user_id))
+    return book_id
 
 
 def current_user(request: Request):
@@ -409,13 +516,20 @@ def register(
     with db() as con:
         if con.execute("SELECT 1 FROM users WHERE username=?", (username,)).fetchone():
             return auth_page("register", "ชื่อผู้ใช้นี้มีคนใช้แล้ว ลองชื่ออื่นนะ", username)
-        first_user = con.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+        first_user = con.execute("SELECT COUNT(*) AS cnt FROM users").fetchone()["cnt"] == 0
         salt = secrets.token_hex(16)
-        cur = con.execute(
-            "INSERT INTO users(username, display, salt, pw) VALUES (?,?,?,?)",
-            (username, display[:30], salt, hash_pw(password, salt)),
-        )
-        uid = cur.lastrowid
+        if USE_PG:
+            row = con.execute(
+                "INSERT INTO users(username, display, salt, pw) VALUES (?,?,?,?) RETURNING id",
+                (username, display[:30], salt, hash_pw(password, salt)),
+            ).fetchone()
+            uid = row["id"]
+        else:
+            cur = con.execute(
+                "INSERT INTO users(username, display, salt, pw) VALUES (?,?,?,?)",
+                (username, display[:30], salt, hash_pw(password, salt)),
+            )
+            uid = cur.lastrowid
         book_id = create_book(con, f"สมุดของ{display[:30]}", uid)
         if first_user:  # ข้อมูลที่จดไว้ก่อนมีระบบล็อกอิน ให้เป็นของคนแรก
             con.execute(
@@ -448,6 +562,8 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
     if not valid_month(month):
         month = this_month
 
+    month_expr = "LEFT(day, 7)" if USE_PG else "substr(day, 1, 7)"
+
     with db() as con:
         books = con.execute(
             "SELECT b.* FROM books b JOIN members m ON m.book_id=b.id "
@@ -465,8 +581,8 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 
         months = [shift(month, i) for i in range(-5, 1)]
         data = con.execute(
-            "SELECT substr(day,1,7) AS m, kind, SUM(amount) AS s FROM entries "
-            "WHERE book_id=? AND substr(day,1,7) BETWEEN ? AND ? GROUP BY m, kind",
+            f"SELECT {month_expr} AS m, kind, SUM(amount) AS s FROM entries "
+            f"WHERE book_id=? AND {month_expr} BETWEEN ? AND ? GROUP BY m, kind",
             (bid, months[0], months[-1]),
         ).fetchall()
 
@@ -476,7 +592,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
                 "SELECT u.display FROM members m JOIN users u ON u.id=m.user_id "
                 "WHERE m.book_id=? ORDER BY u.id",
                 (bid,),
-            )
+            ).fetchall()
         ]
 
     income = sum(r["amount"] for r in rows if r["kind"] == "income")
