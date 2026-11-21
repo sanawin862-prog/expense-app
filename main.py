@@ -115,6 +115,12 @@ def init_db():
             con.execute(
                 "ALTER TABLE entries ADD COLUMN IF NOT EXISTS user_id INTEGER"
             )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entries_book_day ON entries(book_id, day)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)"
+            )
         else:
             con.executescript(
                 """
@@ -616,7 +622,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
             f"<div class='info'><b>{escape(r['category'])}</b><span>{sub}</span></div>"
             f"<div class='amt'>{sign}{r['amount']:,.2f}</div>"
             f"<form method='post' action='/delete/{r['id']}?month={month}&{q}' "
-            f"onsubmit=\"return confirm('ลบรายการนี้นะ?')\">"
+            f"onsubmit="return confirm('ลบรายการนี้นะ?')">"
             f"<button class='del' title='ลบ'>✕</button></form></div>"
         )
     if not items:
@@ -776,10 +782,16 @@ def add(
     amount: float = Form(...),
     note: str = Form(""),
 ):
-    user = current_user(request)
-    if not user:
+    token = request.cookies.get("sid")
+    if not token:
         return RedirectResponse("/login", status_code=303)
     with db() as con:
+        user = con.execute(
+            "SELECT u.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?",
+            (token,),
+        ).fetchone()
+        if not user:
+            return RedirectResponse("/login", status_code=303)
         if is_member(con, user["id"], book) and kind in ("income", "expense") and amount > 0:
             con.execute(
                 "INSERT INTO entries(day, kind, category, amount, note, book_id, user_id) "
