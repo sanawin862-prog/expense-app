@@ -1,14 +1,18 @@
+import csv
 import hashlib
 import hmac
+import io
 import os
 import re
 import secrets
 import sqlite3
 from datetime import date
 from html import escape
+from urllib.parse import quote
 
 from fastapi import FastAPI, Form, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import HTMLResponse, RedirectResponse, Response
 
 DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 USE_PG = bool(DATABASE_URL)
@@ -19,6 +23,8 @@ if USE_PG:
     from psycopg2.pool import ThreadedConnectionPool
 
 app = FastAPI()
+app.add_middleware(GZipMiddleware, minimum_size=500)
+
 DB = "expense.db"
 SESSION_DAYS = 30
 PG_POOL = None
@@ -28,7 +34,14 @@ def get_pg_pool():
     global PG_POOL
     if USE_PG and PG_POOL is None:
         PG_POOL = ThreadedConnectionPool(
-            1, 5, DATABASE_URL, cursor_factory=RealDictCursor
+            1,
+            5,
+            DATABASE_URL,
+            cursor_factory=RealDictCursor,
+            keepalives=1,
+            keepalives_idle=30,
+            keepalives_interval=10,
+            keepalives_count=5,
         )
     return PG_POOL
 
@@ -147,6 +160,9 @@ def init_db():
             con.execute(
                 "CREATE INDEX IF NOT EXISTS idx_sessions_token ON sessions(token)"
             )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_members_user ON members(user_id)"
+            )
         else:
             con.executescript(
                 """
@@ -186,6 +202,12 @@ def init_db():
                 con.execute("ALTER TABLE entries ADD COLUMN book_id INTEGER")
             if "user_id" not in cols:
                 con.execute("ALTER TABLE entries ADD COLUMN user_id INTEGER")
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_entries_book_day ON entries(book_id, day)"
+            )
+            con.execute(
+                "CREATE INDEX IF NOT EXISTS idx_members_user ON members(user_id)"
+            )
 
         con.execute("UPDATE entries SET category='ค่าน้ำมัน' WHERE category='เดินทาง'")
 
@@ -403,6 +425,7 @@ form.add button{
   border:0;border-radius:999px;padding:13px;cursor:pointer;box-shadow:0 5px 0 var(--pink-shadow);
 }
 form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 var(--pink-shadow)}
+form.add button:disabled{opacity:.7;cursor:wait}
 .switch{text-align:center;margin-top:14px;font-size:14px}
 .switch a{color:var(--pink-text)}
 .auth{max-width:400px;margin:24px auto}
@@ -447,10 +470,31 @@ form.add button:active{transform:translateY(3px);box-shadow:0 2px 0 var(--pink-s
 .mcol small{color:var(--muted);font-size:11px}
 .key{display:flex;justify-content:center;gap:16px;margin-top:8px;font-size:13px;color:var(--muted)}
 
-h2.list-title{margin:26px 4px 10px;font-size:18px}
+.list-head{
+  display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;
+  gap:8px;margin:26px 4px 10px;
+}
+.list-head h2{margin:0;font-size:18px}
+.list-tools{display:flex;flex-wrap:wrap;align-items:center;gap:8px}
+.filter-sel{
+  font:inherit;font-size:13px;color:var(--ink);background:var(--surface);
+  border:2px solid var(--lav);border-radius:999px;padding:6px 12px;
+}
+.csv-btn{
+  font:inherit;font-size:13px;font-weight:700;color:var(--ink);text-decoration:none;
+  background:var(--mint-soft);border:2px solid var(--mint);border-radius:999px;
+  padding:6px 12px;display:inline-flex;align-items:center;gap:4px;
+}
+.csv-btn:hover{background:var(--mint);color:var(--accent-ink)}
+.filter-sum{
+  font-size:13px;color:var(--muted);margin:0 6px 10px;
+  display:flex;justify-content:space-between;align-items:center;
+}
+.filter-sum a{color:var(--pink-text)}
+
 .item{
-  display:flex;align-items:center;gap:12px;background:var(--surface);border-radius:22px;
-  padding:10px 14px;margin-bottom:10px;border:3px solid var(--lav-soft);
+  display:flex;align-items:center;gap:10px;background:var(--surface);border-radius:22px;
+  padding:10px 12px;margin-bottom:10px;border:3px solid var(--lav-soft);
 }
 .bubble{
   width:46px;height:46px;border-radius:50%;display:grid;place-items:center;
@@ -464,16 +508,24 @@ h2.list-title{margin:26px 4px 10px;font-size:18px}
 .amt{font-weight:700;font-size:17px;white-space:nowrap}
 .item.out .amt{color:var(--pink-text)}
 .item.in .amt{color:var(--mint-text)}
-.del{
+.acts{display:flex;align-items:center;gap:6px;flex:none}
+.edit-btn,.del{
   border:0;background:var(--lav-soft);color:var(--muted);width:32px;height:32px;
-  border-radius:50%;cursor:pointer;font-size:14px;
+  border-radius:50%;cursor:pointer;font-size:14px;display:grid;place-items:center;
+  text-decoration:none;
 }
+.edit-btn:hover{background:var(--butter-soft);color:var(--ink)}
 .del:hover{background:var(--pink-soft);color:var(--pink-text)}
 .empty{
   text-align:center;background:var(--surface);border:3px dashed var(--lav);border-radius:24px;
   padding:26px 16px;color:var(--muted);
 }
 .empty .em{font-size:38px;display:block}
+.btn-cancel{
+  display:block;text-align:center;margin-top:12px;color:var(--muted);
+  text-decoration:none;font-size:14px;
+}
+.btn-cancel:hover{color:var(--pink-text)}
 
 @media (max-width:480px){
   .cards{gap:8px}
@@ -525,12 +577,21 @@ function toggleTheme(){
   syncThemeUI();
 }
 syncThemeUI();
+document.querySelectorAll('form.add').forEach(function(f){
+  f.addEventListener('submit', function(){
+    var btn = f.querySelector('button[type="submit"], button:not([type])');
+    if(btn && !btn.disabled){
+      btn.disabled = true;
+      btn.textContent = 'กำลังบันทึก... ⏳';
+    }
+  });
+});
 </script>"""
 
 HEAD = """<!doctype html>
 <html lang="th"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>สมุดเก็บตังค์</title>
+<title>Dear Money</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Mali:wght@400;600;700&display=swap" rel="stylesheet">
@@ -561,7 +622,7 @@ def auth_page(mode: str, error: str = "", username: str = "") -> HTMLResponse:
 <div class="auth">
 <header>
   {THEME_TOGGLE_HTML}
-  <span class="pig">🐱✨</span><h1>สมุดเก็บตังค์</h1><p>จดทุกบาท เก็บทุกยิ้ม</p>
+  <span class="pig">🐱✨</span><h1>Dear Money</h1><p>จดทุกบาท เก็บทุกยิ้ม</p>
 </header>
 {err}
 <form class="add" method="post" action="/{mode}">
@@ -648,7 +709,13 @@ def logout(request: Request):
 
 # ---------------------------------------------------------------- main page
 @app.get("/", response_class=HTMLResponse)
-def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
+def home(
+    request: Request,
+    month: str = "",
+    book: int = 0,
+    cat: str = "",
+    notice: str = "",
+):
     token = request.cookies.get("sid")
     if not token:
         return RedirectResponse("/login", status_code=303)
@@ -658,6 +725,11 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
     if not valid_month(month):
         month = this_month
 
+    month_start = f"{month}-01"
+    month_end = f"{shift(month, 1)}-01"
+    months = [shift(month, i) for i in range(-5, 1)]
+    six_start = f"{months[0]}-01"
+    six_end = f"{shift(months[-1], 1)}-01"
     month_expr = "LEFT(day, 7)" if USE_PG else "substr(day, 1, 7)"
 
     with db() as con:
@@ -678,15 +750,14 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 
         rows = con.execute(
             "SELECT e.*, u.display AS who FROM entries e LEFT JOIN users u ON u.id=e.user_id "
-            "WHERE e.book_id=? AND e.day LIKE ? ORDER BY e.day DESC, e.id DESC",
-            (bid, month + "%"),
+            "WHERE e.book_id=? AND e.day >= ? AND e.day < ? ORDER BY e.day DESC, e.id DESC",
+            (bid, month_start, month_end),
         ).fetchall()
 
-        months = [shift(month, i) for i in range(-5, 1)]
         data = con.execute(
             f"SELECT {month_expr} AS m, kind, SUM(amount) AS s FROM entries "
-            f"WHERE book_id=? AND {month_expr} BETWEEN ? AND ? GROUP BY m, kind",
-            (bid, months[0], months[-1]),
+            f"WHERE book_id=? AND day >= ? AND day < ? GROUP BY m, kind",
+            (bid, six_start, six_end),
         ).fetchall()
 
         members = [
@@ -702,8 +773,11 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
     expense = sum(r["amount"] for r in rows if r["kind"] == "expense")
     q = f"book={bid}"
 
+    cat = cat.strip()
+    filtered_rows = [r for r in rows if not cat or r["category"] == cat]
+
     items = ""
-    for r in rows:
+    for r in filtered_rows:
         cls = "in" if r["kind"] == "income" else "out"
         sign = "+" if r["kind"] == "income" else "-"
         emoji = CATEGORIES.get(r["category"], "🏷️")
@@ -712,28 +786,38 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
             sub += " · " + escape(r["who"])
         if r["note"]:
             sub += " · " + escape(r["note"])
+        cat_q = f"&cat={quote(cat)}" if cat else ""
         items += (
             f"<div class='item {cls}'>"
             f"<div class='bubble'>{emoji}</div>"
             f"<div class='info'><b>{escape(r['category'])}</b><span>{sub}</span></div>"
             f"<div class='amt'>{sign}{r['amount']:,.2f}</div>"
-            f"<form method='post' action='/delete/{r['id']}?month={month}&{q}' "
+            f"<div class='acts'>"
+            f"<a class='edit-btn' href='/edit/{r['id']}?month={month}&{q}{cat_q}' title='แก้ไข'>✏️</a>"
+            f"<form method='post' action='/delete/{r['id']}?month={month}&{q}{cat_q}' "
             f'onsubmit="return confirm(&#39;ลบรายการนี้นะ?&#39;)">'
-            f"<button class='del' title='ลบ'>✕</button></form></div>"
+            f"<button class='del' title='ลบ'>✕</button></form>"
+            f"</div></div>"
         )
     if not items:
-        items = (
-            "<div class='empty'><span class='em'>🐣</span>"
-            "ยังไม่มีรายการในเดือนนี้<br>เริ่มจดรายการแรกกันเลย!</div>"
-        )
+        if cat:
+            items = (
+                f"<div class='empty'><span class='em'>🔍</span>"
+                f"ไม่พบรายการในหมวด <b>{escape(cat)}</b> เดือนนี้</div>"
+            )
+        else:
+            items = (
+                "<div class='empty'><span class='em'>🐣</span>"
+                "ยังไม่มีรายการในเดือนนี้<br>เริ่มจดรายการแรกกันเลย!</div>"
+            )
 
     if expense > 0:
-        cat = {}
+        cat_sum = {}
         for r in rows:
             if r["kind"] == "expense":
-                cat[r["category"]] = cat.get(r["category"], 0) + r["amount"]
+                cat_sum[r["category"]] = cat_sum.get(r["category"], 0) + r["amount"]
         stops, legend, acc = [], "", 0.0
-        for i, (name, val) in enumerate(sorted(cat.items(), key=lambda x: -x[1])):
+        for i, (name, val) in enumerate(sorted(cat_sum.items(), key=lambda x: -x[1])):
             color = PALETTE[i % len(PALETTE)]
             pct = val / expense * 100
             stops.append(f"{color} {acc:.2f}% {acc + pct:.2f}%")
@@ -778,6 +862,32 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
     options = "".join(
         f"<option value='{name}'>{emo} {name}</option>" for name, emo in CATEGORIES.items()
     )
+    all_cats = list(CATEGORIES.keys())
+    for r in rows:
+        if r["category"] not in all_cats:
+            all_cats.append(r["category"])
+    filter_opts = "<option value=''>ทุกหมวดหมู่</option>" + "".join(
+        f"<option value='{escape(name)}'{' selected' if name == cat else ''}>"
+        f"{CATEGORIES.get(name, '🏷️')} {escape(name)}</option>"
+        for name in all_cats
+    )
+
+    filter_sum_html = ""
+    if cat:
+        f_inc = sum(r["amount"] for r in filtered_rows if r["kind"] == "income")
+        f_exp = sum(r["amount"] for r in filtered_rows if r["kind"] == "expense")
+        parts = []
+        if f_inc:
+            parts.append(f"รับ +{f_inc:,.2f}")
+        if f_exp:
+            parts.append(f"จ่าย -{f_exp:,.2f}")
+        summary_txt = " · ".join(parts) if parts else "0.00"
+        filter_sum_html = (
+            f"<div class='filter-sum'>"
+            f"<span>กรองหมวด <b>{escape(cat)}</b> ({len(filtered_rows)} รายการ · {summary_txt} บาท)</span>"
+            f"<a href='/?month={month}&{q}'>ล้างตัวกรอง</a></div>"
+        )
+
     default_day = today.isoformat() if month == this_month else month + "-01"
 
     chips = "".join(
@@ -793,8 +903,8 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 <header>
   {THEME_TOGGLE_HTML}
   <span class="pig">🐱✨</span>
-  <h1>สมุดบัญชี</h1>
-  <p>จดทุกวัน ห้ามลืม</p>
+  <h1>Dear Money</h1>
+  <p></p>
   <div class="hello">สวัสดี {escape(user['display'])} 👋
     <form method="post" action="/logout"><button>ออกจากระบบ</button></form></div>
 </header>
@@ -811,7 +921,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 
 <div class="cards">
   <div class="card in"><span class="em">🌱</span>รายรับ<b>{income:,.2f}</b></div>
-  <div class="card out"><span class="em">🍓</span>รายจ่าย<b>{expense:,.2f}</b></div>
+  <div class="card out"><span class="em">💸</span>รายจ่าย<b>{expense:,.2f}</b></div>
   <div class="card bal"><span class="em">⭐</span>คงเหลือ<b>{income - expense:,.2f}</b></div>
 </div>
 
@@ -820,7 +930,7 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
   <h2>✏️ จดรายการใหม่</h2>
   <div class="kind">
     <input type="radio" id="k-out" name="kind" value="expense" checked>
-    <label for="k-out" class="k-out">🍓 รายจ่าย</label>
+    <label for="k-out" class="k-out">💸 รายจ่าย</label>
     <input type="radio" id="k-in" name="kind" value="income">
     <label for="k-in" class="k-in">🌱 รายรับ</label>
   </div>
@@ -839,10 +949,23 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 <div class="panel">
   <h2>📊 เปรียบเทียบรายเดือน (6 เดือนล่าสุด)</h2>
   <div class="mbars">{cols}</div>
-  <div class="key"><span>🌱 รายรับ</span><span>🍓 รายจ่าย</span><span>แตะแท่งเพื่อดูเดือนนั้น</span></div>
+  <div class="key"><span>🌱 รายรับ</span><span>💸 รายจ่าย</span><span>แตะแท่งเพื่อดูเดือนนั้น</span></div>
 </div>
 
-<h2 class="list-title">📒 รายการเดือน{THAI_MONTHS[int(month[5:7]) - 1]}</h2>
+<div class="list-head">
+  <h2>📒 รายการเดือน{THAI_MONTHS[int(month[5:7]) - 1]}</h2>
+  <div class="list-tools">
+    <form method="get" style="margin:0">
+      <input type="hidden" name="book" value="{bid}">
+      <input type="hidden" name="month" value="{month}">
+      <select class="filter-sel" name="cat" onchange="this.form.submit()" aria-label="กรองตามหมวดหมู่">
+        {filter_opts}
+      </select>
+    </form>
+    <a class="csv-btn" href="/export?book={bid}&month={month}" title="ดาวน์โหลดไฟล์ Excel/CSV">📥 CSV</a>
+  </div>
+</div>
+{filter_sum_html}
 {items}
 
 <div class="panel">
@@ -863,6 +986,157 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 </div>
 
 {THEME_TOGGLE_SCRIPT}</div></body></html>"""
+    )
+
+
+# ---------------------------------------------------------------- edit & export
+@app.get("/edit/{entry_id}", response_class=HTMLResponse)
+def edit_page(
+    request: Request,
+    entry_id: int,
+    month: str = "",
+    book: int = 0,
+    cat: str = "",
+):
+    user = current_user(request)
+    if not user:
+        return RedirectResponse("/login", status_code=303)
+    with db() as con:
+        e = con.execute("SELECT * FROM entries WHERE id=?", (entry_id,)).fetchone()
+        if not e or not e["book_id"] or not is_member(con, user["id"], e["book_id"]):
+            return RedirectResponse("/", status_code=303)
+
+    all_cats = list(CATEGORIES.items())
+    if e["category"] not in CATEGORIES:
+        all_cats.append((e["category"], "🏷️"))
+    options = "".join(
+        f"<option value='{escape(name)}'{' selected' if name == e['category'] else ''}>"
+        f"{emo} {escape(name)}</option>"
+        for name, emo in all_cats
+    )
+    back_url = f"/?book={book or e['book_id']}"
+    if valid_month(month):
+        back_url += f"&month={month}"
+    if cat:
+        back_url += f"&cat={quote(cat)}"
+
+    out_chk = " checked" if e["kind"] == "expense" else ""
+    in_chk = " checked" if e["kind"] == "income" else ""
+
+    return HTMLResponse(
+        HEAD
+        + f"""
+<div class="auth">
+<header>
+  {THEME_TOGGLE_HTML}
+  <span class="pig">✏️</span>
+  <h1>แก้ไขรายการ</h1>
+</header>
+<form class="add" method="post" action="/edit/{entry_id}">
+  <input type="hidden" name="book" value="{book or e['book_id']}">
+  <input type="hidden" name="cat" value="{escape(cat)}">
+  <div class="kind">
+    <input type="radio" id="k-out" name="kind" value="expense"{out_chk}>
+    <label for="k-out" class="k-out">💸 รายจ่าย</label>
+    <input type="radio" id="k-in" name="kind" value="income"{in_chk}>
+    <label for="k-in" class="k-in">🌱 รายรับ</label>
+  </div>
+  <input type="date" name="day" value="{escape(e['day'])}" required>
+  <select name="category">{options}</select>
+  <input class="full" type="number" name="amount" step="0.01" min="0.01" value="{e['amount']:.2f}" required>
+  <input class="full" type="text" name="note" value="{escape(e['note'] or '')}" placeholder="โน้ตเล็กๆ (ไม่บังคับ)">
+  <button class="full">บันทึกการแก้ไข 💖</button>
+</form>
+<a class="btn-cancel" href="{back_url}">← ยกเลิกและกลับหน้าหลัก</a>
+</div>{THEME_TOGGLE_SCRIPT}</div></body></html>"""
+    )
+
+
+@app.post("/edit/{entry_id}")
+def edit_save(
+    request: Request,
+    entry_id: int,
+    book: int = Form(0),
+    cat: str = Form(""),
+    kind: str = Form(...),
+    day: str = Form(...),
+    category: str = Form(...),
+    amount: float = Form(...),
+    note: str = Form(""),
+):
+    token = request.cookies.get("sid")
+    if not token:
+        return RedirectResponse("/login", status_code=303)
+    with db() as con:
+        user = con.execute(
+            "SELECT u.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?",
+            (token,),
+        ).fetchone()
+        if not user:
+            return RedirectResponse("/login", status_code=303)
+        e = con.execute("SELECT book_id FROM entries WHERE id=?", (entry_id,)).fetchone()
+        if (
+            e
+            and e["book_id"]
+            and is_member(con, user["id"], e["book_id"])
+            and kind in ("income", "expense")
+            and amount > 0
+        ):
+            con.execute(
+                "UPDATE entries SET day=?, kind=?, category=?, amount=?, note=? WHERE id=?",
+                (day, kind, category.strip(), amount, note.strip(), entry_id),
+            )
+            book = e["book_id"]
+    target = f"/?month={day[:7]}&book={book}"
+    if cat:
+        target += f"&cat={quote(cat)}"
+    return RedirectResponse(target, status_code=303)
+
+
+@app.get("/export")
+def export_csv(request: Request, book: int = 0, month: str = ""):
+    token = request.cookies.get("sid")
+    if not token:
+        return RedirectResponse("/login", status_code=303)
+    if not valid_month(month):
+        month = date.today().strftime("%Y-%m")
+    month_start = f"{month}-01"
+    month_end = f"{shift(month, 1)}-01"
+
+    with db() as con:
+        user = con.execute(
+            "SELECT u.id FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token=?",
+            (token,),
+        ).fetchone()
+        if not user or not is_member(con, user["id"], book):
+            return RedirectResponse("/", status_code=303)
+        rows = con.execute(
+            "SELECT e.day, e.kind, e.category, e.amount, e.note, u.display AS who "
+            "FROM entries e LEFT JOIN users u ON u.id=e.user_id "
+            "WHERE e.book_id=? AND e.day >= ? AND e.day < ? ORDER BY e.day ASC, e.id ASC",
+            (book, month_start, month_end),
+        ).fetchall()
+
+    buf = io.StringIO()
+    buf.write("﻿")
+    writer = csv.writer(buf)
+    writer.writerow(["วันที่", "ประเภท", "หมวดหมู่", "จำนวนเงิน (บาท)", "โน้ต", "ผู้บันทึก"])
+    for r in rows:
+        kind_th = "รายรับ" if r["kind"] == "income" else "รายจ่าย"
+        writer.writerow([
+            r["day"],
+            kind_th,
+            r["category"],
+            f"{r['amount']:.2f}",
+            r["note"] or "",
+            r["who"] or "",
+        ])
+
+    filename = f"dear-money-{month}.csv"
+    return Response(
+        content=buf.getvalue().encode("utf-8"),
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 
@@ -897,7 +1171,13 @@ def add(
 
 
 @app.post("/delete/{entry_id}")
-def delete(request: Request, entry_id: int, month: str = "", book: int = 0):
+def delete(
+    request: Request,
+    entry_id: int,
+    month: str = "",
+    book: int = 0,
+    cat: str = "",
+):
     user = current_user(request)
     if not user:
         return RedirectResponse("/login", status_code=303)
@@ -908,6 +1188,8 @@ def delete(request: Request, entry_id: int, month: str = "", book: int = 0):
     target = f"/?book={book}"
     if valid_month(month):
         target += f"&month={month}"
+    if cat:
+        target += f"&cat={quote(cat)}"
     return RedirectResponse(target, status_code=303)
 
 
