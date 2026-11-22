@@ -639,7 +639,7 @@ def auth_page(mode: str, error: str = "", username: str = "") -> HTMLResponse:
     )
 
 
-@app.get("/login", response_class=HTMLResponse)
+@app.api_route("/login", methods=["GET", "HEAD"], response_class=HTMLResponse)
 def login_page():
     return auth_page("login")
 
