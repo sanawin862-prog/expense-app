@@ -16,7 +16,7 @@ USE_PG = bool(DATABASE_URL)
 if USE_PG:
     import psycopg2
     from psycopg2.extras import RealDictCursor
-    from psycopg2.pool import SimpleConnectionPool
+    from psycopg2.pool import ThreadedConnectionPool
 
 app = FastAPI()
 DB = "expense.db"
@@ -27,7 +27,7 @@ PG_POOL = None
 def get_pg_pool():
     global PG_POOL
     if USE_PG and PG_POOL is None:
-        PG_POOL = SimpleConnectionPool(
+        PG_POOL = ThreadedConnectionPool(
             1, 5, DATABASE_URL, cursor_factory=RealDictCursor
         )
     return PG_POOL
@@ -66,14 +66,17 @@ class DBConn:
         return self
 
     def __exit__(self, exc_type, exc, tb):
+        broken = False
         try:
             if exc_type is None:
                 self._conn.commit()
             else:
                 self._conn.rollback()
+        except Exception:
+            broken = True
         finally:
             if self._is_pg and PG_POOL is not None:
-                PG_POOL.putconn(self._conn)
+                PG_POOL.putconn(self._conn, close=(broken or self._conn.closed != 0))
             else:
                 self._conn.close()
 
@@ -82,6 +85,12 @@ def db():
     if USE_PG:
         pool = get_pg_pool()
         conn = pool.getconn()
+        try:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+        except Exception:
+            pool.putconn(conn, close=True)
+            conn = pool.getconn()
         return DBConn(conn, True)
     con = sqlite3.connect(DB)
     con.row_factory = sqlite3.Row
@@ -187,10 +196,10 @@ init_db()
 CATEGORIES = {
     "อาหาร": "🍜",
     "ค่าน้ำมัน": "⛽",
-    "ที่พัก": "🏠",
+    "ที่หอ": "🏠",
     "ช้อปปิ้ง": "🛍️",
     "ค่าน้ำ/ไฟ/เน็ต": "💡",
-    "สุขภาพ": "💊",
+    "บังยืม": "🤦🏻‍♂️",
     "บันเทิง": "🎮",
     "เงินเดือน": "💰",
     "รายได้เสริม": "🌟",
@@ -784,8 +793,8 @@ def home(request: Request, month: str = "", book: int = 0, notice: str = ""):
 <header>
   {THEME_TOGGLE_HTML}
   <span class="pig">🐱✨</span>
-  <h1>สมุดเก็บตังค์</h1>
-  <p>จดทุกบาท เก็บทุกยิ้ม</p>
+  <h1>สมุดบัญชี</h1>
+  <p>จดทุกวัน ห้ามลืม</p>
   <div class="hello">สวัสดี {escape(user['display'])} 👋
     <form method="post" action="/logout"><button>ออกจากระบบ</button></form></div>
 </header>
